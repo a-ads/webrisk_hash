@@ -1,38 +1,158 @@
 # WebriskHash
 
-TODO: Delete this and the text below, and describe your gem
+This Ruby gem implements the URL hashing and canonicalization algorithm described in
+the Google Web Risk documentation: https://cloud.google.com/web-risk/docs/urls-hashing
 
-Welcome to your new gem! In this directory, you'll find the files you need to be able to package up your Ruby library into a gem. Put your Ruby code in the file `lib/webrisk_hash`. To experiment with that code, run `bin/console` for an interactive prompt.
+## Overview
+
+The Web Risk API uses URL hashing to check URLs against threat lists. This gem implements
+the complete hashing process:
+
+1. **Canonicalization** - Normalize URLs by removing fragments, resolving percent-encoding,
+   normalizing IP addresses, and more
+2. **Suffix/Prefix Generation** - Create up to 30 host/path combinations from each URL
+3. **Hash Computation** - Generate SHA256 hashes for each combination
+4. **Prefix Extraction** - Extract hash prefixes (4-32 bytes) for efficient lookup
+
+## Features
+
+- **URL Canonicalization** (`WebriskHash.canonicalize`)
+  - Removes tab (0x09), CR (0x0d), LF (0x0a) characters
+  - Removes URL fragments
+  - Repeatedly percent-unescapes URLs until no more escapes remain
+  - Normalizes IP addresses (decimal, hex, octal, and dotted variants)
+  - Converts Internationalized Domain Names (IDN) to ASCII (Punycode)
+  - Resolves path segments (/../ and /./)
+  - Collapses consecutive slashes in paths
+  - Removes default ports (80 for HTTP, 443 for HTTPS)
+  - Percent-escapes characters <= ASCII 32, >= 127, #, and %
+  - Preserves query parameters without path canonicalization
+
+- **Suffix/Prefix Expression Generation** (`WebriskHash.suffix_postfix_expressions`)
+  - Up to 5 host suffix variations (exact hostname + up to 4 from last 5 components)
+  - Up to 6 path prefix variations (with/without query + progressive paths)
+  - Combines to create up to 30 expressions per URL
+  - IP addresses use only exact hostname (no suffix variations)
+  - Handles query parameters correctly
+
+- **SHA256 Hash Prefixes** (`WebriskHash.get_prefixes`, `WebriskHash.get_prefix_map`)
+  - FIPS-180-2 compliant SHA256 hashing
+  - Configurable prefix lengths (4-32 bytes = 32-256 bits)
+  - Hash prefix extraction from most significant bytes
 
 ## Installation
 
-TODO: Replace `UPDATE_WITH_YOUR_GEM_NAME_IMMEDIATELY_AFTER_RELEASE_TO_RUBYGEMS_ORG` with your gem name right after releasing it to RubyGems.org. Please do not do it earlier due to security reasons. Alternatively, replace this section with instructions to install your gem from git if you don't plan to release to RubyGems.org.
+Add to your `Gemfile`:
 
-Install the gem and add to the application's Gemfile by executing:
-
-```bash
-bundle add UPDATE_WITH_YOUR_GEM_NAME_IMMEDIATELY_AFTER_RELEASE_TO_RUBYGEMS_ORG
+```ruby
+gem "webrisk_hash"
 ```
 
-If bundler is not being used to manage dependencies, install the gem by executing:
+Or install and run locally:
 
 ```bash
-gem install UPDATE_WITH_YOUR_GEM_NAME_IMMEDIATELY_AFTER_RELEASE_TO_RUBYGEMS_ORG
+bundle install
 ```
 
-## Usage
+## Usage Examples
 
-TODO: Write usage instructions here
+### Basic Usage
+
+```ruby
+require "webrisk_hash"
+
+url = "http://example.com/path/to/page?query=1"
+
+# Step 1: Canonicalize the URL
+canonical = WebriskHash.canonicalize(url)
+# => "http://example.com/path/to/page?query=1"
+
+# Step 2: Get hash prefixes (default 256 bits = 32 bytes)
+prefixes = WebriskHash.get_prefixes(url)
+# => #<Set: {"\xAB\xCD...(32 bytes)", ...}>
+
+# Display as hex
+puts prefixes.to_a.map { |p| p.unpack1("H*") }
+```
+
+### Working with Suffix/Prefix Expressions
+
+```ruby
+# Generate all suffix/prefix expressions for a URL
+canonical = WebriskHash.canonicalize("http://a.b.c/1/2.html?param=1")
+expressions = WebriskHash.suffix_postfix_expressions(canonical)
+
+puts "Total expressions: #{expressions.size}"
+expressions.each { |expr| puts "  #{expr}" }
+
+# Output:
+# Total expressions: 8
+#   a.b.c/1/2.html?param=1
+#   a.b.c/1/2.html
+#   a.b.c/1/
+#   a.b.c/
+#   b.c/1/2.html?param=1
+#   b.c/1/2.html
+#   b.c/1/
+#   b.c/
+```
+
+### Getting Hash Prefixes with Custom Length
+
+```ruby
+# Get 32-bit (4 byte) hash prefixes instead of full 256-bit hashes
+prefixes_32bit = WebriskHash.get_prefixes(url, 32)
+
+# Get detailed mapping of expressions to hashes
+map = WebriskHash.get_prefix_map(url, 32)
+map.each do |expression, prefix_bin|
+  hex_prefix = prefix_bin.unpack1('H*')
+  puts "#{expression} -> #{hex_prefix}"
+end
+```
+
+### Canonicalization Examples
+
+```ruby
+# Remove control characters
+WebriskHash.canonicalize("http://google.com/foo\tbar\rbaz\n2")
+# => "http://google.com/foobarbaz2"
+
+# Percent-unescape repeatedly
+WebriskHash.canonicalize("http://host/%25%32%35")
+# => "http://host/%25"
+
+# Normalize IP addresses
+WebriskHash.canonicalize("http://3279880203/blah")
+# => "http://195.127.0.11/blah"
+
+# Resolve path segments
+WebriskHash.canonicalize("http://google.com/blah/..")
+# => "http://google.com/"
+
+# Remove fragments
+WebriskHash.canonicalize("http://evil.com/foo#bar")
+# => "http://evil.com/foo"
+
+# Lowercase hostname
+WebriskHash.canonicalize("http://www.GOOgle.com/")
+# => "http://www.google.com/"
+```
 
 ## Development
 
-After checking out the repo, run `bin/setup` to install dependencies. Then, run `rake spec` to run the tests. You can also run `bin/console` for an interactive prompt that will allow you to experiment.
+Install dependencies and run tests:
 
-To install this gem onto your local machine, run `bundle exec rake install`. To release a new version, update the version number in `version.rb`, and then run `bundle exec rake release`, which will create a git tag for the version, push git commits and the created tag, and push the `.gem` file to [rubygems.org](https://rubygems.org).
+```bash
+bundle install
+rake spec
+```
 
-## Contributing
+For interactive debugging use:
 
-Bug reports and pull requests are welcome on GitHub at https://github.com/[USERNAME]/webrisk_hash.
+```bash
+bin/console
+```
 
 ## License
 
